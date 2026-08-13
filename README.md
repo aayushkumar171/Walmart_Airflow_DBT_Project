@@ -13,8 +13,6 @@ The pipeline is designed around two ingestion paths:
 
 The uploaded project repository contains the **Airflow orchestration, Docker environment, dbt project, transformations, tests, snapshots, and Databricks job trigger**. The Databricks ingestion job itself is external to this repository and is triggered from Airflow through the Databricks SDK.
 
-> **Reference video:** [WALMART Data Engineering End-To-End Project — Airflow + DBT + Databricks](https://youtu.be/ZEE-jNAthB0)
-
 ---
 
 ## Table of Contents
