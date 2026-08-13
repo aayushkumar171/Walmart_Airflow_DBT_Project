@@ -1,1265 +1,1415 @@
-# Walmart Data Engineering Pipeline --- Airflow + dbt + Databricks
+# Walmart Data Engineering End-to-End Project
 
-![Architecture](docs/architecture/architecture.png)
+**Apache Airflow + dbt + Databricks + Delta Lake + AWS S3**
 
-An end-to-end data engineering pipeline designed to ingest
-Walmart-related operational data from multiple sources, process
-incremental changes, orchestrate transformations with Apache Airflow,
-transform and test data with dbt, and prepare analytics-ready datasets
-on Databricks.
+![Walmart Data Engineering Architecture](docs/architecture/architecture.png)
 
-The project demonstrates a production-oriented ELT architecture with
-**CDC, file ingestion, incremental processing, data quality checks,
-business transformations, dimensional modeling, and orchestration**.
+This repository implements the **Airflow + dbt + Databricks** portion of an end-to-end Walmart data engineering project based on the architecture demonstrated in the reference tutorial.
 
-------------------------------------------------------------------------
+The pipeline is designed around two ingestion paths:
+
+- **Agentic DB → CDC → Databricks**
+- **AWS S3 → Files → Databricks**
+
+The uploaded project repository contains the **Airflow orchestration, Docker environment, dbt project, transformations, tests, snapshots, and Databricks job trigger**. The Databricks ingestion job itself is external to this repository and is triggered from Airflow through the Databricks SDK.
+
+> **Reference video:** [WALMART Data Engineering End-To-End Project — Airflow + DBT + Databricks](https://youtu.be/ZEE-jNAthB0)
+
+---
 
 ## Table of Contents
 
--   [Project Overview](#project-overview)
--   [Architecture](#architecture)
--   [Architecture Components](#architecture-components)
--   [End-to-End Data Flow](#end-to-end-data-flow)
--   [1. Source Systems](#1-source-systems)
--   [2. Change Data Capture](#2-change-data-capture)
--   [3. File-Based Ingestion](#3-file-based-ingestion)
--   [4. Incremental Processing](#4-incremental-processing)
--   [5. Apache Airflow](#5-apache-airflow)
--   [6. dbt Transformation Layer](#6-dbt-transformation-layer)
--   [7. One-Big-Table / Business
-    Layer](#7-one-big-table--business-layer)
--   [8. Data Quality](#8-data-quality)
--   [9. Gold / Dimensional Modeling](#9-gold--dimensional-modeling)
--   [10. Databricks and Delta Lake](#10-databricks-and-delta-lake)
--   [Project Structure](#project-structure)
--   [Technology Stack](#technology-stack)
--   [Data Modeling](#data-modeling)
--   [Incremental Processing](#incremental-processing-1)
--   [Snapshots and Historical
-    Tracking](#snapshots-and-historical-tracking)
--   [Data Quality Strategy](#data-quality-strategy)
--   [Orchestration Flow](#orchestration-flow)
--   [How to Run the Project](#how-to-run-the-project)
--   [Environment Variables](#environment-variables)
--   [Example Pipeline Execution](#example-pipeline-execution)
--   [Engineering Concepts
-    Demonstrated](#engineering-concepts-demonstrated)
--   [Future Improvements](#future-improvements)
--   [Author](#author)
+- [Project Overview](#project-overview)
+- [Architecture](#architecture)
+- [How the Architecture Maps to This Repository](#how-the-architecture-maps-to-this-repository)
+- [End-to-End Data Flow](#end-to-end-data-flow)
+- [Source Layer](#source-layer)
+- [CDC and Databricks Job](#cdc-and-databricks-job)
+- [Incremental Processing](#incremental-processing)
+- [Apache Airflow Orchestration](#apache-airflow-orchestration)
+- [dbt Transformation Layer](#dbt-transformation-layer)
+- [Silver Technical Layer](#silver-technical-layer)
+- [Silver Business Layer and OBT](#silver-business-layer-and-obt)
+- [Gold Ephemeral Models](#gold-ephemeral-models)
+- [Snapshots and SCD Type 2](#snapshots-and-scd-type-2)
+- [Gold Fact Model](#gold-fact-model)
+- [Data Quality](#data-quality)
+- [Databricks and Delta Lake](#databricks-and-delta-lake)
+- [Dockerized Airflow Environment](#dockerized-airflow-environment)
+- [Project Structure](#project-structure)
+- [Technology Stack](#technology-stack)
+- [Pipeline DAG](#pipeline-dag)
+- [Configuration](#configuration)
+- [Running the Project](#running-the-project)
+- [Security Notes](#security-notes)
+- [What This Project Demonstrates](#what-this-project-demonstrates)
+- [Limitations of This Repository](#limitations-of-this-repository)
+- [Future Improvements](#future-improvements)
+- [Author](#author)
 
-------------------------------------------------------------------------
+---
 
-## Project Overview
+# Project Overview
 
-This project implements a modern data engineering workflow for
-transforming operational Walmart data into analytics-ready datasets.
+The project demonstrates an end-to-end analytical data pipeline for Walmart-style retail data.
 
-The architecture supports two primary ingestion paths:
+The source entities represented in the dbt project are:
 
-1.  **Agentic DB → CDC → Databricks**
-2.  **AWS S3 → Files → Databricks**
+- Customers
+- Employees
+- Orders
+- Order Items
+- Products
+- Stores
 
-The data is then processed through an orchestration and transformation
-pipeline:
+The high-level architecture is:
 
-``` text
-Agentic DB ── CDC ──────────────┐
-                                │
-AWS S3 ── Files ────────────────┤
-                                ▼
-                         Databricks
-                                │
-                                ▼
-                         Incremental Layer
-                                │
-                                ▼
-                         Apache Airflow
-                                │
-                                ▼
-                              dbt
-                                │
-                    ┌───────────┴───────────┐
-                    ▼                       ▼
-             Business / OBT          Gold Models
-                    │                       │
-                    └───────────┬───────────┘
-                                ▼
-                         Quality Checks
-                                │
-                                ▼
-                       Analytics-Ready Data
+```text
+                    ┌──────────────────────┐
+                    │      Agentic DB      │
+                    │   Operational Data   │
+                    └──────────┬───────────┘
+                               │
+                              CDC
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │      Databricks      │
+                    │   Ingestion / Bronze │
+                    └──────────┬───────────┘
+                               │
+                               │
+AWS S3 ─────────── Files ──────┤
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │ Incremental / Bronze │
+                    │       Data           │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │    Apache Airflow    │
+                    │     Orchestration    │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │         dbt          │
+                    │ Transform + Validate │
+                    └──────────┬───────────┘
+                               │
+                ┌──────────────┴──────────────┐
+                ▼                             ▼
+       Silver Technical              Silver Business
+                │                             │
+                │                             ▼
+                │                            OBT
+                │                             │
+                └──────────────┬──────────────┘
+                               ▼
+                       Gold Ephemeral
+                               │
+                               ▼
+                         dbt Snapshots
+                               │
+                               ▼
+                         Gold Dimensions
+                               │
+                               ▼
+                          Gold Facts
 ```
 
-The objective is not simply to move data from one system to another. The
-project focuses on **reliable, repeatable, testable, and maintainable
-data pipelines**.
-
-------------------------------------------------------------------------
+---
 
 # Architecture
 
-The architecture below represents the complete pipeline.
+The architecture image used by this repository is the project architecture diagram:
 
-![Walmart Data Engineering
-Architecture](docs/architecture/architecture.png)
+![Architecture](docs/architecture/architecture.png)
 
-### High-level flow
+## Main architectural responsibilities
 
-``` text
-                   ┌──────────────────┐
-                   │    Agentic DB    │
-                   │  PostgreSQL DB   │
-                   └────────┬─────────┘
-                            │
-                           CDC
-                            │
-                            ▼
-                   ┌──────────────────┐
-                   │                  │
-                   │    Databricks    │
-                   │                  │
-                   └────────┬─────────┘
-                            │
-                            │
-AWS S3 ─────── Files ───────┤
-                            │
-                            ▼
-                   ┌──────────────────┐
-                   │   Incremental    │
-                   │    Processing    │
-                   └────────┬─────────┘
-                            │
-                            ▼
-                   ┌──────────────────┐
-                   │  Apache Airflow  │
-                   │  Orchestration   │
-                   └────────┬─────────┘
-                            │
-                            ▼
-                   ┌──────────────────┐
-                   │       dbt        │
-                   │ Transformation   │
-                   └────────┬─────────┘
-                            │
-               ┌────────────┴────────────┐
-               ▼                         ▼
-        One-Big-Table              Gold Models
-               │                         │
-               └────────────┬────────────┘
-                            ▼
-                    Quality Checks
-                            │
-                            ▼
-                    Analytics Layer
+| Component | Responsibility |
+|---|---|
+| Agentic DB | Operational/source database |
+| CDC | Captures database changes for downstream ingestion |
+| AWS S3 | File-based source/landing path |
+| Databricks | Ingestion and data processing platform |
+| Incremental layer | Processes new/changed data rather than rebuilding everything unnecessarily |
+| Apache Airflow | Orchestrates the end-to-end workflow |
+| dbt | SQL transformation, testing, snapshots and model dependency management |
+| Silver Technical | Cleaned/transformed source entities |
+| Silver Business | Joined business representation / OBT |
+| Gold Ephemeral | Intermediate dimension-oriented datasets |
+| Gold Snapshots | Historical dimension tracking |
+| Gold Fact | Analytical fact model |
+
+---
+
+# How the Architecture Maps to This Repository
+
+There is an important distinction between the **complete architecture** and the files contained in this GitHub repository.
+
+The repository contains:
+
+```text
+Airflow
+    │
+    ├── DAG
+    ├── Databricks job trigger
+    └── dbt orchestration
+             │
+             ▼
+          dbt Core
+             │
+             ├── Silver Technical
+             ├── Silver Business
+             ├── Gold Ephemeral
+             ├── Snapshots
+             └── Gold Fact
 ```
 
-------------------------------------------------------------------------
+The Databricks ingestion job is **referenced and triggered by Airflow**, but its notebook/job source is not included in the uploaded repository.
 
-# Architecture Components
+This is visible in `dags/orchestrate.py`, where the DAG uses the Databricks SDK to call an existing Databricks job.
 
-## 1. Source Systems
+Therefore, this repository should not claim that the Databricks ingestion notebook itself is stored here.
 
-The pipeline receives data from two sources.
+---
 
-### Agentic Database
+# End-to-End Data Flow
 
-The database acts as an operational source containing business entities
-such as:
+The complete logical flow is:
 
--   Customers
--   Employees
--   Orders
--   Order items
--   Products
--   Stores
-
-The database is connected to the pipeline through a **Change Data
-Capture (CDC)** mechanism.
-
-### AWS S3
-
-AWS S3 provides a file-based ingestion path.
-
-Files arriving in S3 can be processed by the pipeline without requiring
-a direct database connection.
-
-This makes the architecture capable of handling both:
-
--   database-driven ingestion
--   file-driven ingestion
-
-------------------------------------------------------------------------
-
-# 2. Change Data Capture
-
-The database ingestion path uses **CDC**.
-
-Instead of repeatedly copying the entire source database, CDC captures
-changes such as:
-
-``` text
-INSERT
-UPDATE
-DELETE
+```text
+1. Source data
+       │
+       ├── Agentic DB
+       │
+       └── AWS S3 files
+              │
+              ▼
+2. Databricks ingestion
+       │
+       ▼
+3. Bronze / incremental source data
+       │
+       ▼
+4. Airflow starts the downstream workflow
+       │
+       ▼
+5. dbt source freshness
+       │
+       ▼
+6. Silver Technical models
+       │
+       ▼
+7. Silver Technical tests
+       │
+       ▼
+8. Silver Business OBT
+       │
+       ▼
+9. Silver Business tests
+       │
+       ▼
+10. Gold Ephemeral models
+       │
+       ▼
+11. dbt snapshots
+       │
+       ▼
+12. Gold fact model
 ```
 
-This is useful because production databases can contain millions of
-records.
+---
 
-A full reload would require repeatedly processing all records:
+# Source Layer
 
-``` text
-Source Table
-     │
-     ▼
-Read Everything
-     │
-     ▼
-Transform Everything
-     │
-     ▼
-Write Everything
+The dbt source configuration is located at:
+
+```text
+walmart_data_engineer/models/source/sources.yml
 ```
 
-CDC instead focuses on changed records:
+The configured Databricks source is:
 
-``` text
-Source Table
-     │
-     ▼
-Detect Changes
-     │
-     ├── INSERT
-     ├── UPDATE
-     └── DELETE
-          │
-          ▼
-    Process Changes
+```text
+catalog/database: walmart
+schema:            bronze
+source:            walmart_databricks
 ```
 
-### Benefits
+The source tables are:
 
--   Reduced processing cost
--   Lower data movement
--   Faster pipelines
--   Better scalability
--   Near-real-time or frequent incremental ingestion
--   Better support for large source systems
-
-------------------------------------------------------------------------
-
-# 3. File-Based Ingestion
-
-The second ingestion path starts from AWS S3.
-
-``` text
-AWS S3
-  │
-  └── Files
-        │
-        ▼
-   Databricks
-        │
-        ▼
-Incremental Processing
+```text
+walmart.bronze.orders
+walmart.bronze.customers
+walmart.bronze.products
+walmart.bronze.order_items
+walmart.bronze.stores
+walmart.bronze.employees
 ```
 
-This path is useful when source systems deliver:
+These source definitions allow dbt to reference upstream data and perform source freshness checks.
 
--   CSV files
--   JSON files
--   Parquet files
--   periodic exports
--   batch files
+---
 
-The architecture therefore supports more than one source ingestion
-pattern.
+# CDC and Databricks Job
 
-------------------------------------------------------------------------
+The Airflow DAG contains a task named:
 
-# 4. Incremental Processing
+```text
+ingest_cdc
+```
 
-After ingestion, data is processed incrementally.
+This task creates a Databricks `WorkspaceClient`, triggers an existing Databricks job with `run_now`, and waits for the Databricks run to finish.
 
-Incremental processing means that the pipeline does not unnecessarily
-rebuild the complete dataset during every execution.
+The implementation checks Databricks run states and only continues when the job reports success.
 
 Conceptually:
 
-``` text
-Previous Data
+```text
+Airflow
+   │
+   ▼
+ingest_cdc
+   │
+   ▼
+Databricks Jobs API
+   │
+   ▼
+Existing Databricks Job
+   │
+   ▼
+CDC / ingestion processing
+   │
+   ▼
+Success
+   │
+   ▼
+Continue Airflow DAG
+```
+
+The DAG polls the Databricks job until it reaches a terminal state.
+
+If the job succeeds, the pipeline continues.
+
+If the job fails, the Airflow task raises an exception.
+
+### Important repository boundary
+
+The actual Databricks job definition is **not included in this repository**. Only its Airflow trigger is included.
+
+---
+
+# Incremental Processing
+
+The architecture includes an incremental processing stage between ingestion and downstream transformations.
+
+The purpose of incremental processing is to avoid unnecessarily rebuilding all data when only new or changed records need to be processed.
+
+The repository's dbt models also use Databricks-generated incremental/merge behavior in the executed artifacts.
+
+The general concept is:
+
+```text
+Existing Data
      +
 New / Changed Data
      │
      ▼
-Incremental Transformation
+Incremental Processing
      │
      ▼
 Updated Dataset
 ```
 
-This is particularly important for:
+The exact CDC ingestion implementation lives in the external Databricks job referenced by the Airflow DAG.
 
--   Orders
--   Customers
--   Products
--   Store data
--   Large transactional tables
+---
 
-The incremental layer acts as a bridge between ingestion and downstream
-dbt transformations.
+# Apache Airflow Orchestration
 
-------------------------------------------------------------------------
+Apache Airflow is responsible for controlling the order of operations.
 
-# 5. Apache Airflow
+The DAG is defined in:
 
-Apache Airflow is the **orchestration layer** of the project.
-
-Airflow is responsible for controlling when pipeline tasks run and how
-they depend on each other.
-
-A simplified workflow is:
-
-``` text
-Ingestion
-   │
-   ▼
-Incremental Processing
-   │
-   ▼
-Source Validation
-   │
-   ▼
-dbt Transformations
-   │
-   ▼
-Data Quality Tests
-   │
-   ▼
-Gold Models
+```text
+dags/orchestrate.py
 ```
 
-Airflow provides:
+The DAG is named:
 
--   Scheduling
--   Task dependency management
--   Retries
--   Logging
--   Monitoring
--   Failure visibility
--   Workflow management
-
-### Why Airflow?
-
-The transformation logic and orchestration logic have different
-responsibilities.
-
-**dbt** answers:
-
-> How should the data be transformed?
-
-**Airflow** answers:
-
-> When should the transformations run, and in what order?
-
-Keeping those responsibilities separate makes the pipeline easier to
-maintain.
-
-------------------------------------------------------------------------
-
-# 6. dbt Transformation Layer
-
-dbt is used for the SQL-based transformation layer.
-
-The dbt project follows a layered transformation strategy.
-
-``` text
-Source
-   │
-   ▼
-Silver Technical
-   │
-   ▼
-Silver Business
-   │
-   ▼
-Gold
+```text
+orchestrate
 ```
 
-### Silver Technical Layer
+The task dependency chain implemented in the repository is:
 
-This layer focuses on technical transformations such as:
-
--   Cleaning
--   Standardization
--   Type conversion
--   Deduplication
--   Incremental processing
--   Basic business-safe transformations
-
-Typical models include:
-
-``` text
-customers_t
-employees_t
-orders_t
-order_items_t
-products_t
-stores_t
+```text
+ingest_cdc
+    ↓
+clean_target
+    ↓
+source_freshness
+    ↓
+silver_technical
+    ↓
+silver_technical_tests
+    ↓
+silver_business
+    ↓
+silver_business_tests
+    ↓
+gold_ephermeral
+    ↓
+gold_dimensions
+    ↓
+gold_facts
 ```
 
-The `_t` naming represents transformed technical datasets.
+The spelling `gold_ephermeral` is the current task ID in the uploaded code.
 
-------------------------------------------------------------------------
+---
 
-# 7. One-Big-Table / Business Layer
+## Airflow Task Details
 
-The business layer creates a consolidated dataset that can be used for
-downstream analytical processing.
+### 1. `ingest_cdc`
 
-This layer can combine information from multiple technical models.
+Triggers the configured Databricks job and waits for completion.
+
+### 2. `clean_target`
+
+Removes the local dbt:
+
+```text
+target/
+logs/
+```
+
+directories before the dbt workflow starts.
+
+### 3. `source_freshness`
+
+Runs:
+
+```bash
+dbt source freshness
+```
+
+### 4. `silver_technical`
+
+Runs:
+
+```bash
+dbt run --select silver_t
+```
+
+### 5. `silver_technical_tests`
+
+Runs:
+
+```bash
+dbt test --select silver_t
+```
+
+### 6. `silver_business`
+
+Runs:
+
+```bash
+dbt run --select silver_b
+```
+
+### 7. `silver_business_tests`
+
+Runs:
+
+```bash
+dbt test --select silver_b
+```
+
+### 8. `gold_ephermeral`
+
+Runs the Gold ephemeral model selection.
+
+The current repository command is:
+
+```bash
+dbt run --select gold/ephermeral
+```
+
+### 9. `gold_dimensions`
+
+Runs:
+
+```bash
+dbt snapshot
+```
+
+This creates/updates the snapshot-based dimension tables.
+
+### 10. `gold_facts`
+
+Runs:
+
+```bash
+dbt run --select gold/fact
+```
+
+This builds the final fact model.
+
+---
+
+# dbt Transformation Layer
+
+The dbt project is located at:
+
+```text
+walmart_data_engineer/
+```
+
+The dbt project is configured as:
+
+```yaml
+name: walmart_project
+version: 1.0.0
+profile: walmart_project
+```
+
+The main dbt paths are:
+
+```text
+models/
+tests/
+snapshots/
+macros/
+seeds/
+analyses/
+```
+
+The project creates three major transformation areas:
+
+```text
+silver_t
+silver_b
+gold
+```
+
+---
+
+# Silver Technical Layer
+
+The Silver Technical layer is located at:
+
+```text
+models/silver_t/
+```
+
+It contains:
+
+```text
+customers_t.sql
+employees_t.sql
+orders_t.sql
+order_items_t.sql
+products_t.sql
+stores_t.sql
+properties.yml
+```
+
+The models transform the corresponding Bronze source tables.
 
 Conceptually:
 
-``` text
-Customers
-     │
-     ├─────────────┐
-Products           │
-     │             │
-Orders             ├──► Business OBT
-     │             │
-Order Items        │
-     │             │
-Stores ────────────┘
+```text
+walmart.bronze.customers
+             │
+             ▼
+       customers_t
+
+walmart.bronze.orders
+             │
+             ▼
+         orders_t
+
+walmart.bronze.products
+             │
+             ▼
+        products_t
 ```
 
-The purpose of an OBT / business-level model is to provide a convenient
-representation of business data for downstream consumption.
+The same pattern is applied to:
 
-This avoids repeatedly rebuilding the same complex joins for every
-analytical use case.
+- employees
+- order items
+- stores
 
-------------------------------------------------------------------------
+The dbt project configures these models as tables in the `silver_t` schema.
 
-# 8. Data Quality
+---
 
-Data quality is treated as a first-class part of the pipeline.
+# Silver Business Layer and OBT
 
-The project uses dbt tests and validation checks to detect problems
-before data reaches the final analytical layer.
+The Silver Business layer is located at:
 
-Typical checks include:
-
-### Not Null
-
-Ensures important fields contain values.
-
-``` text
-customer_id IS NOT NULL
+```text
+models/silver_b/obt_b.sql
 ```
 
-### Unique
+The main model is:
 
-Ensures identifiers do not appear multiple times when uniqueness is
-expected.
-
-``` text
-order_id → UNIQUE
+```text
+obt_b
 ```
 
-### Relationships
+The OBT combines data from the Silver Technical models.
 
-Validates foreign-key-like relationships.
+The joins implemented in the SQL include:
 
-``` text
-fact_orders.customer_id
-          │
-          ▼
-dim_customers.customer_id
+```text
+orders_t
+    │
+    ├── customers_t
+    │
+    ├── order_items_t
+    │
+    └── stores_t
+           │
+           └── employees_t
+
+order_items_t
+    │
+    └── products_t
 ```
 
-### Source Freshness
+The resulting dataset combines order, customer, order-item, product, employee and store attributes.
 
-Checks whether source data is arriving within the expected freshness
-window.
+### Why OBT?
 
-### Why quality checks matter
+The OBT provides a consolidated business-level dataset that can be reused by downstream Gold models instead of repeating the same joins.
 
-Without quality checks:
+---
 
-``` text
-Bad Data
-   │
-   ▼
-Transformation
-   │
-   ▼
-Gold Table
-   │
-   ▼
-Dashboard
-   │
-   ▼
-Wrong Business Decision
+# Gold Ephemeral Models
+
+The Gold ephemeral models are located at:
+
+```text
+models/gold/ephemeral/
 ```
 
-With validation:
+The repository contains:
 
-``` text
-Raw Data
-   │
-   ▼
-Quality Checks
-   │
-   ├── PASS ──► Transform
-   │
-   └── FAIL ──► Stop / Investigate
+```text
+eph_customers.sql
+eph_employees.sql
+eph_orders.sql
+eph_products.sql
+eph_stores.sql
 ```
 
-------------------------------------------------------------------------
+Each model selects a distinct dimension-oriented representation from:
 
-# 9. Gold / Dimensional Modeling
-
-The final analytical layer follows a dimensional modeling approach.
-
-The project contains dimensions and fact-oriented models.
-
-Typical dimensions include:
-
-``` text
-dim_customers
-dim_employees
-dim_orders
-dim_products
-dim_stores
+```text
+obt_b
 ```
-
-The main transactional fact model is:
-
-``` text
-fact_orders
-```
-
-A simplified star schema is:
-
-``` text
-                    dim_customers
-                         │
-                         │
-                         ▼
-dim_products ─────── fact_orders ─────── dim_stores
-                         │
-                         │
-                         ▼
-                    dim_employees
-                         │
-                         ▼
-                     dim_orders
-```
-
-### Fact table
-
-The fact table represents measurable business events.
 
 For example:
 
--   Orders
--   Quantities
--   Revenue
--   Product activity
--   Customer activity
+```text
+obt_b
+  │
+  ├── eph_customers
+  ├── eph_employees
+  ├── eph_orders
+  ├── eph_products
+  └── eph_stores
+```
 
-### Dimension tables
+The dbt project explicitly configures this directory as:
 
-Dimensions provide descriptive context around facts.
+```yaml
+ephemeral:
+  +materialized: ephemeral
+```
 
-Examples:
+Therefore these models are used as intermediate dbt relations rather than being persisted as standalone physical tables.
 
--   Customer information
--   Product information
--   Store information
--   Employee information
+---
 
-This structure makes analytical queries easier and more efficient.
+# Snapshots and SCD Type 2
 
-------------------------------------------------------------------------
+The repository contains five snapshot definitions:
 
-# 10. Databricks and Delta Lake
+```text
+snapshots/
+├── dim_customers.yml
+├── dim_employees.yml
+├── dim_orders.yml
+├── dim_products.yml
+└── dim_stores.yml
+```
 
-Databricks provides the processing environment for the data engineering
-workflow.
+These snapshots use the corresponding ephemeral models as their relations.
 
-The architecture uses Databricks to handle:
+For example:
 
--   Ingestion
--   Incremental processing
--   Distributed data processing
--   Data storage/management
--   Delta-based data operations
+```text
+eph_customers
+      │
+      ▼
+dim_customers snapshot
+```
 
-Delta Lake provides additional capabilities over raw file storage,
-including:
+The snapshot configuration uses:
 
--   ACID transactions
--   Schema enforcement
--   Schema evolution
--   Time travel
--   Reliable updates
--   Better data management
+```text
+strategy: timestamp
+```
+
+and tracks changes using the relevant:
+
+```text
+updated_timestamp
+```
+
+column.
+
+The snapshot configuration also defines a current-record date using:
+
+```text
+9999-12-31
+```
+
+for `dbt_valid_to`.
+
+This allows historical versions of dimension records to be retained.
 
 Conceptually:
 
-``` text
-S3 / Database
-      │
-      ▼
- Databricks
-      │
-      ▼
- Delta-based Data
-      │
-      ▼
- dbt Transformations
+```text
+Customer ID
+    │
+    ├── Version 1
+    │     dbt_valid_from
+    │     dbt_valid_to
+    │
+    └── Version 2
+          dbt_valid_from
+          dbt_valid_to
 ```
 
-------------------------------------------------------------------------
+This is the project's implementation of a **Slowly Changing Dimension Type 2-style historical pattern**.
+
+---
+
+# Gold Fact Model
+
+The fact model is:
+
+```text
+models/gold/fact/fact_orders.sql
+```
+
+The resulting model is:
+
+```text
+fact_orders
+```
+
+It is built from:
+
+```sql
+{{ ref('obt_b') }}
+```
+
+The selected fields include:
+
+```text
+order_id
+order_item_id
+product_id
+store_id
+employee_id
+customer_id
+total_amount
+quantity
+unit_price
+line_amount
+```
+
+The fact table therefore represents order/order-item level business activity with links to the major business entities.
+
+---
+
+# Data Quality
+
+The project implements data quality at multiple stages.
+
+## Source Freshness
+
+Airflow runs:
+
+```bash
+dbt source freshness
+```
+
+before the Silver Technical models.
+
+This checks the freshness of configured dbt sources.
+
+---
+
+## Silver Technical Tests
+
+The project contains dbt tests for:
+
+### Products
+
+```text
+product_id
+    ├── not_null
+    └── unique
+```
+
+The product tests also use a configuration condition:
+
+```text
+price > 0
+```
+
+### Orders
+
+```text
+order_id
+    ├── not_null
+    └── unique
+```
+
+---
+
+## Silver Business Test
+
+The project contains a singular SQL test:
+
+```text
+tests/test_obt.sql
+```
+
+The test checks whether important OBT identifiers are null:
+
+```text
+order_id
+product_id
+employee_id
+store_id
+order_item_id
+customer_id
+```
+
+The test is configured with:
+
+```text
+severity = warn
+```
+
+This means the test is treated as a warning rather than an error.
+
+---
+
+# Databricks and Delta Lake
+
+Databricks is the processing platform used by the project.
+
+The dbt profile connects to a Databricks SQL endpoint using:
+
+```text
+type: databricks
+catalog: walmart
+schema: dbt_schema
+host: <Databricks host>
+http_path: <HTTP path>
+token: <token>
+```
+
+The dbt source points to:
+
+```text
+walmart.bronze
+```
+
+while transformed datasets are configured into:
+
+```text
+walmart.silver_t
+walmart.silver_b
+walmart.gold
+```
+
+The executed dbt artifacts in the uploaded project show Databricks SQL `MERGE` operations for transformed models and snapshot processing.
+
+Delta Lake is part of the Databricks data platform used by the architecture. The actual Delta ingestion/table creation logic belongs to the Databricks job that is triggered by Airflow and is not included in this repository.
+
+---
+
+# Dockerized Airflow Environment
+
+The repository uses Docker Compose for the Airflow environment.
+
+The custom image is defined by:
+
+```text
+Dockerfile
+```
+
+The Dockerfile starts from:
+
+```text
+apache/airflow:3.2.2
+```
+
+and installs the project's additional Python dependencies.
+
+The Docker Compose configuration uses:
+
+```text
+CeleryExecutor
+```
+
+and includes the main Airflow services plus supporting infrastructure.
+
+### Main components
+
+```text
+Airflow API Server
+Airflow Scheduler
+Airflow DAG Processor
+Airflow Worker
+Airflow Triggerer
+Airflow Init
+Airflow CLI
+```
+
+### Supporting services
+
+```text
+PostgreSQL
+Redis
+Flower
+```
+
+PostgreSQL is used as the Airflow metadata/result database and Redis is used as the Celery broker.
+
+This repository's Docker Compose file is explicitly intended for **local development**, not a production deployment.
+
+---
 
 # Project Structure
 
-A recommended repository structure is:
+The relevant source-controlled structure is:
 
-``` text
-walmart-airflow-dbt/
+```text
+airflow_dbt_project/
 │
-├── README.md
-├── LICENSE
-├── .gitignore
-├── .env.example
 ├── Dockerfile
-├── docker-compose.yml
+├── docker-compose.yaml
 ├── requirements.txt
 │
 ├── dags/
 │   └── orchestrate.py
 │
-├── dbt/
-│   └── walmart_data_engineer/
-│       ├── dbt_project.yml
-│       ├── profiles.yml.example
-│       │
-│       ├── models/
-│       │   ├── source/
-│       │   ├── silver_t/
-│       │   ├── silver_b/
-│       │   └── gold/
-│       │
-│       ├── snapshots/
-│       ├── tests/
-│       ├── macros/
-│       ├── seeds/
-│       └── analyses/
+├── config/
+│   └── airflow.cfg
 │
-├── docs/
-│   ├── architecture/
-│   │   └── architecture.png
-│   ├── airflow/
-│   ├── dbt/
-│   └── screenshots/
+├── plugins/
 │
-└── data/
-    └── sample/
+└── walmart_data_engineer/
+    │
+    ├── dbt_project.yml
+    ├── profiles.yml
+    │
+    ├── models/
+    │   ├── source/
+    │   │   └── sources.yml
+    │   │
+    │   ├── silver_t/
+    │   │   ├── customers_t.sql
+    │   │   ├── employees_t.sql
+    │   │   ├── orders_t.sql
+    │   │   ├── order_items_t.sql
+    │   │   ├── products_t.sql
+    │   │   ├── stores_t.sql
+    │   │   └── properties.yml
+    │   │
+    │   ├── silver_b/
+    │   │   └── obt_b.sql
+    │   │
+    │   └── gold/
+    │       ├── ephemeral/
+    │       │   ├── eph_customers.sql
+    │       │   ├── eph_employees.sql
+    │       │   ├── eph_orders.sql
+    │       │   ├── eph_products.sql
+    │       │   └── eph_stores.sql
+    │       │
+    │       └── fact/
+    │           └── fact_orders.sql
+    │
+    ├── snapshots/
+    │   ├── dim_customers.yml
+    │   ├── dim_employees.yml
+    │   ├── dim_orders.yml
+    │   ├── dim_products.yml
+    │   └── dim_stores.yml
+    │
+    ├── tests/
+    │   └── test_obt.sql
+    │
+    ├── macros/
+    │   └── custom_schema.sql
+    │
+    ├── seeds/
+    ├── analyses/
+    └── .gitignore
 ```
 
-Generated runtime files such as `logs/`, `target/`, `__pycache__/`, and
-local environment files should not be committed to Git.
+### Files that should not be committed
 
-------------------------------------------------------------------------
+The uploaded ZIP currently contains generated/runtime artifacts such as:
+
+```text
+logs/
+target/
+dbt_packages/
+__pycache__/
+.env
+```
+
+These should be excluded from the final Git repository.
+
+The real GitHub repository should keep the source code and configuration templates, not generated execution artifacts or secrets.
+
+---
 
 # Technology Stack
 
-  Technology       Purpose
-  ---------------- ---------------------------------
-  Python           Pipeline/orchestration support
-  Apache Airflow   Workflow orchestration
-  dbt              SQL transformation and testing
-  Databricks       Data processing platform
-  Delta Lake       Reliable data storage layer
-  AWS S3           File-based source
-  PostgreSQL       Operational/source database
-  Docker           Local containerized environment
-  Git/GitHub       Version control
-  SQL              Data transformation
+| Technology | Role in this project |
+|---|---|
+| Apache Airflow | Workflow orchestration |
+| dbt Core | SQL transformation, tests and snapshots |
+| dbt-databricks | dbt adapter for Databricks |
+| Databricks | Data processing and analytical platform |
+| Delta Lake | Databricks lakehouse storage layer |
+| AWS S3 | File-based ingestion path in the architecture |
+| PostgreSQL | Airflow metadata database |
+| Redis | Celery broker |
+| Docker | Local Airflow environment |
+| Python | Airflow DAG and Databricks SDK integration |
+| SQL / Jinja | dbt transformations |
+| Git | Version control |
 
-------------------------------------------------------------------------
+---
 
-# Data Modeling
+# Pipeline DAG
 
-The project uses a layered data architecture.
+The actual Airflow dependency chain is:
 
-## Source Layer
-
-Raw operational data.
-
-``` text
-Agentic DB
-AWS S3
-```
-
-## Incremental Layer
-
-Only new or changed data is processed.
-
-``` text
-CDC / Files
-     │
-     ▼
-Incremental Dataset
-```
-
-## Silver Layer
-
-Cleaned and standardized data.
-
-``` text
-customers_t
-employees_t
-orders_t
-order_items_t
-products_t
-stores_t
-```
-
-## Business Layer
-
-Business-ready joined representation.
-
-``` text
-obt_b
-```
-
-## Gold Layer
-
-Analytics-ready dimensional models.
-
-``` text
-Dimensions
-    +
-Facts
-```
-
-------------------------------------------------------------------------
-
-# Incremental Processing
-
-Incremental processing is one of the main engineering concepts
-demonstrated by the project.
-
-A simplified incremental strategy is:
-
-``` text
-Existing Dataset
-      +
-Incoming Records
-      │
-      ▼
-Identify New / Changed Rows
-      │
-      ▼
-Transform
-      │
-      ▼
-Merge / Append
-      │
-      ▼
-Updated Dataset
-```
-
-The main advantage is that processing cost grows with the amount of
-changed data rather than always growing with the entire source table.
-
-------------------------------------------------------------------------
-
-# Snapshots and Historical Tracking
-
-The project uses dbt snapshots for historical tracking.
-
-Snapshots are useful when the business needs to answer questions such
-as:
-
-> What did this customer/product/store record look like before it
-> changed?
-
-Instead of simply overwriting:
-
-``` text
-Customer
-   │
-   └── Update
-          │
+```text
+┌──────────────┐
+│  ingest_cdc  │
+└──────┬───────┘
+       ▼
+┌──────────────┐
+│ clean_target │
+└──────┬───────┘
+       ▼
+┌──────────────────┐
+│ source_freshness │
+└────────┬─────────┘
+         ▼
+┌───────────────────┐
+│ silver_technical  │
+└─────────┬─────────┘
           ▼
-      New Value
+┌──────────────────────────┐
+│ silver_technical_tests   │
+└───────────┬──────────────┘
+            ▼
+┌───────────────────┐
+│  silver_business  │
+└─────────┬─────────┘
+          ▼
+┌─────────────────────────┐
+│ silver_business_tests  │
+└──────────┬──────────────┘
+           ▼
+┌──────────────────┐
+│ gold_ephermeral  │
+└────────┬─────────┘
+         ▼
+┌──────────────────┐
+│ gold_dimensions  │
+│  dbt snapshot    │
+└────────┬─────────┘
+         ▼
+┌──────────────────┐
+│    gold_facts    │
+└──────────────────┘
 ```
 
-historical tracking can preserve versions:
+This dependency chain is explicitly defined in `dags/orchestrate.py`.
 
-``` text
-Customer ID
-     │
-     ├── Version 1
-     │      Valid From
-     │      Valid To
-     │
-     └── Version 2
-            Valid From
-            Valid To
+---
+
+# Configuration
+
+## Airflow
+
+Airflow is configured through:
+
+```text
+docker-compose.yaml
+.env
+config/airflow.cfg
 ```
 
-This is commonly associated with **Slowly Changing Dimension Type 2 (SCD
-Type 2)** patterns.
+## dbt
 
-The project applies this concept to dimensional data where historical
-changes are important.
+The dbt project uses:
 
-------------------------------------------------------------------------
-
-# Data Quality Strategy
-
-The quality strategy has multiple layers.
-
-``` text
-Source Freshness
-       │
-       ▼
-Schema / Column Validation
-       │
-       ▼
-dbt Tests
-       │
-       ▼
-Relationship Checks
-       │
-       ▼
-Gold Data
+```text
+dbt_project.yml
+profiles.yml
 ```
 
-Important quality checks include:
+The profile connects to Databricks.
 
--   `not_null`
--   `unique`
--   relationship validation
--   source freshness
--   custom SQL tests where required
+### Required Databricks information
 
-The goal is to prevent invalid records from silently propagating
-downstream.
+You need:
 
-------------------------------------------------------------------------
-
-# Orchestration Flow
-
-The pipeline is designed to run in a controlled sequence.
-
-A representative execution flow is:
-
-``` text
-             ┌─────────────────┐
-             │ Source / Ingest │
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │   Incremental   │
-             │    Processing   │
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Source Freshness│
-             │     Checks      │
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Silver Technical│
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Silver Tests    │
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Silver Business │
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Business Tests  │
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Gold / Ephemeral│
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Gold Snapshots  │
-             └────────┬────────┘
-                      ▼
-             ┌─────────────────┐
-             │ Gold Facts      │
-             └─────────────────┘
+```text
+Databricks host
+Databricks HTTP path
+Databricks token
+Databricks job ID
 ```
 
-This dependency-driven design ensures that downstream models do not run
-before their upstream dependencies are ready.
+The Airflow DAG uses the host, token and job ID to trigger the Databricks ingestion job.
 
-------------------------------------------------------------------------
+---
 
-# How to Run the Project
+# Running the Project
 
 ## Prerequisites
 
 Install:
 
--   Docker Desktop
--   Git
--   Python 3.x
--   A Databricks workspace
--   Access to the required source data
--   AWS S3 access if using the S3 ingestion path
+- Docker Desktop
+- Git
+- Access to a Databricks workspace
+- Access to the required Databricks SQL endpoint
+- Access to the source/bronze data
+- The Databricks ingestion job referenced by the Airflow DAG
 
-------------------------------------------------------------------------
+---
 
-## 1. Clone the Repository
+## 1. Configure secrets
 
-``` bash
-git clone <your-repository-url>
-cd walmart-airflow-dbt
+Create a local `.env` file.
+
+Do not commit it.
+
+The Airflow Compose file expects values such as:
+
+```text
+AIRFLOW_UID
+FERNET_KEY
 ```
 
-------------------------------------------------------------------------
+The Databricks values are also required by the DAG/dbt profile.
 
-## 2. Configure Environment Variables
+---
 
-Create a local `.env` file based on:
+## 2. Configure the Databricks connection values
 
-``` text
-.env.example
+Replace the placeholders in your local configuration:
+
+```text
+your_databricks_host
+your_databricks_token
+your_job_id
+your_http_path
 ```
 
-Do not commit `.env` to GitHub.
+with your actual values.
 
-Example configuration:
+---
 
-``` env
-AIRFLOW_UID=50000
+## 3. Build the Airflow image
 
-DATABRICKS_HOST=<your-databricks-host>
-DATABRICKS_TOKEN=<your-databricks-token>
-DATABRICKS_JOB_ID=<your-databricks-job-id>
+```bash
+docker compose build
 ```
 
-Use your actual local configuration and secret-management approach.
+---
 
-------------------------------------------------------------------------
+## 4. Start the environment
 
-## 3. Start the Docker Environment
-
-``` bash
+```bash
 docker compose up -d
 ```
 
-Check running containers:
+Check services:
 
-``` bash
+```bash
 docker compose ps
 ```
 
-View Airflow logs if required:
+---
 
-``` bash
-docker compose logs -f
+## 5. Open Airflow
+
+The Compose configuration exposes the Airflow API server on:
+
+```text
+http://localhost:8080
 ```
 
-------------------------------------------------------------------------
+Enable the `orchestrate` DAG and trigger it manually.
 
-## 4. Access Airflow
+---
 
-Open the Airflow web interface exposed by your Docker Compose
-configuration.
+## 6. Monitor the pipeline
 
-From the Airflow UI:
+Follow the DAG:
 
-1.  Locate the project DAG.
-2.  Enable the DAG.
-3.  Trigger it manually.
-4.  Monitor task execution.
-5.  Inspect logs for failed tasks.
-6.  Verify successful downstream transformations.
-
-------------------------------------------------------------------------
-
-## 5. Run dbt
-
-From the dbt project directory:
-
-``` bash
-dbt deps
+```text
+ingest_cdc
+→ clean_target
+→ source_freshness
+→ silver_technical
+→ silver_technical_tests
+→ silver_business
+→ silver_business_tests
+→ gold_ephermeral
+→ gold_dimensions
+→ gold_facts
 ```
 
-Then:
+Airflow task logs can be used to diagnose failures.
 
-``` bash
+---
+
+# Running dbt Manually
+
+The dbt project directory is:
+
+```text
+walmart_data_engineer/
+```
+
+Useful commands include:
+
+```bash
 dbt debug
 ```
 
-Compile the project:
-
-``` bash
-dbt compile
+```bash
+dbt source freshness
 ```
 
-Run models:
-
-``` bash
-dbt run
+```bash
+dbt run --select silver_t
 ```
 
-Run tests:
-
-``` bash
-dbt test
+```bash
+dbt test --select silver_t
 ```
 
-Generate documentation:
-
-``` bash
-dbt docs generate
+```bash
+dbt run --select silver_b
 ```
 
-Serve documentation locally:
-
-``` bash
-dbt docs serve
+```bash
+dbt test --select silver_b
 ```
 
-------------------------------------------------------------------------
-
-# Environment Variables
-
-The project may require environment-specific configuration such as:
-
-``` text
-DATABRICKS_HOST
-DATABRICKS_TOKEN
-DATABRICKS_JOB_ID
-AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY
-AWS_REGION
-AIRFLOW_UID
+```bash
+dbt snapshot
 ```
 
-Secrets should be supplied through:
-
--   environment variables
--   Airflow Connections
--   secret managers
--   CI/CD secrets
-
-Do not store credentials directly inside DAGs or committed configuration
-files.
-
-------------------------------------------------------------------------
-
-# Example Pipeline Execution
-
-A typical run looks like:
-
-``` text
-1. Source data arrives
-          ↓
-2. CDC / file ingestion
-          ↓
-3. Databricks processes incoming data
-          ↓
-4. Incremental layer updated
-          ↓
-5. Airflow starts downstream workflow
-          ↓
-6. Source freshness validated
-          ↓
-7. dbt Silver Technical models execute
-          ↓
-8. Silver quality tests execute
-          ↓
-9. Business OBT is created
-          ↓
-10. Business quality checks execute
-          ↓
-11. Gold models execute
-          ↓
-12. Snapshots maintain historical versions
-          ↓
-13. Fact models are generated
-          ↓
-14. Analytics-ready data becomes available
+```bash
+dbt run --select gold/fact
 ```
 
-------------------------------------------------------------------------
+The normal project execution should be performed through the Airflow DAG so that the intended task dependencies are respected.
 
-# Engineering Concepts Demonstrated
+---
 
-This project demonstrates several real-world data engineering concepts:
+# Security Notes
 
-### Data Engineering
+The uploaded project contains placeholder credentials in the DAG and dbt profile.
 
--   ELT architecture
--   Incremental data processing
--   Change Data Capture
--   Batch/file ingestion
--   Data transformation
--   Data quality
--   Dimensional modeling
+For GitHub, do **not** commit real credentials.
 
-### Databricks / Delta
+Use:
 
--   Databricks-based processing
--   Delta Lake
--   Incremental processing
--   Reliable analytical storage
+```text
+.env.example
+```
 
-### dbt
+for documenting required environment variables and keep:
 
--   dbt models
--   `ref()`
--   Incremental models
--   Ephemeral models
--   Snapshots
--   SCD Type 2
--   Generic tests
--   Singular/custom tests
--   Source freshness
--   Macros
--   Model documentation
--   Model dependencies
+```text
+.env
+```
+
+out of version control.
+
+For a more production-oriented implementation, credentials should be stored using Airflow Connections, environment variables, or a dedicated secret manager rather than hardcoded in source code.
+
+---
+
+# What This Project Demonstrates
+
+This project demonstrates practical knowledge of:
 
 ### Airflow
 
--   DAGs
--   Task dependencies
--   Scheduling
--   Orchestration
--   Retries
--   Logging
--   Pipeline monitoring
+- DAG creation
+- Task dependencies
+- BashOperator
+- TaskFlow API
+- Databricks job triggering
+- External job monitoring
+- Local Docker-based Airflow deployment
 
-### DevOps
+### dbt
 
--   Docker
--   Environment configuration
--   Git
--   GitHub
--   Reproducible development environment
+- Sources
+- Source freshness
+- Model organization
+- `ref()`
+- Jinja
+- Tests
+- Singular SQL tests
+- Ephemeral models
+- Snapshots
+- SCD Type 2-style historical tracking
+- Model schemas
+- Databricks adapter
 
-------------------------------------------------------------------------
+### Databricks
 
-# Why This Architecture?
+- Databricks job integration
+- Databricks SQL
+- Bronze/Silver/Gold organization
+- Incremental data processing
+- Delta Lake-oriented lakehouse architecture
 
-The architecture separates responsibilities between different
-technologies.
+### Data Modeling
 
-  Layer               Responsibility
-  ------------------- -----------------------------
-  Agentic DB          Operational source
-  AWS S3              File-based ingestion source
-  CDC                 Capture database changes
-  Databricks          Data processing
-  Incremental Layer   Efficient change processing
-  Airflow             Orchestration
-  dbt                 Transformation and testing
-  Delta Lake          Reliable data storage
-  Gold Layer          Analytics-ready models
+- Source-to-Silver transformation
+- Business OBT
+- Dimension-oriented intermediate models
+- Snapshot-based dimensions
+- Fact modeling
+- Historical data tracking
 
-This separation makes the system easier to:
+### Data Quality
 
--   maintain
--   test
--   debug
--   scale
--   monitor
--   extend
+- Source freshness checks
+- `not_null`
+- `unique`
+- Conditional test configuration
+- Singular SQL test
+- Warning-level data quality validation
 
-------------------------------------------------------------------------
+### Docker
+
+- Custom Airflow image
+- Docker Compose
+- CeleryExecutor
+- PostgreSQL
+- Redis
+- Local orchestration environment
+
+---
+
+# Limitations of This Repository
+
+For accuracy, the following distinction is important.
+
+### Included
+
+This repository contains:
+
+- Airflow DAG
+- Airflow Docker environment
+- dbt project
+- dbt source definitions
+- Silver Technical models
+- Silver Business OBT
+- Gold ephemeral models
+- Gold fact model
+- dbt snapshots
+- dbt tests
+- Databricks SDK integration
+
+### Not Included
+
+The uploaded repository does not contain the actual Databricks ingestion notebook/job implementation for the CDC/file ingestion layer.
+
+The Airflow DAG instead triggers an already-created Databricks job using:
+
+```python
+ws.jobs.run_now(job_id="your_job_id")
+```
+
+Therefore the README describes the ingestion architecture shown in the project diagram/video while clearly separating it from the code that is actually present in this repository.
+
+---
 
 # Future Improvements
 
-Potential improvements include:
+These are improvements that can be added later without changing the current architecture:
 
--   Add GitHub Actions CI/CD
--   Add automated dbt test execution in CI
--   Add Slack/email failure notifications
--   Add centralized secret management
--   Add pipeline monitoring and alerting
--   Add data observability
--   Add Power BI dashboards
--   Add automated dbt documentation deployment
--   Add performance monitoring
--   Add infrastructure-as-code
--   Add cloud deployment automation
--   Add more advanced CDC handling
--   Add SLA monitoring
+- Add the Databricks ingestion notebook/job source to the repository
+- Replace hardcoded Databricks placeholders with Airflow Connections or secrets
+- Add `.env.example`
+- Add a production-style `.gitignore`
+- Add GitHub Actions CI
+- Add automated `dbt compile` and `dbt test`
+- Add Airflow failure notifications
+- Add pipeline monitoring
+- Add dbt documentation screenshots
+- Add Airflow DAG screenshots
+- Add Databricks job screenshots
+- Add a Power BI dashboard on top of the Gold layer
+- Add a data dictionary
+- Add a dedicated data model diagram
 
-------------------------------------------------------------------------
+---
 
-# Project Highlights
+# Reference
 
-The key engineering capabilities demonstrated by this project are:
+This project follows the architecture and concepts demonstrated in the following tutorial:
 
-``` text
-        ┌─────────────────────────────┐
-        │       Data Sources          │
-        └──────────────┬──────────────┘
-                       │
-                       ▼
-        ┌─────────────────────────────┐
-        │       CDC + File Ingestion  │
-        └──────────────┬──────────────┘
-                       │
-                       ▼
-        ┌─────────────────────────────┐
-        │        Databricks           │
-        │    Incremental Processing   │
-        └──────────────┬──────────────┘
-                       │
-                       ▼
-        ┌─────────────────────────────┐
-        │       Apache Airflow        │
-        │       Orchestration         │
-        └──────────────┬──────────────┘
-                       │
-                       ▼
-        ┌─────────────────────────────┐
-        │             dbt             │
-        │ Transform + Test + Document │
-        └──────────────┬──────────────┘
-                       │
-                       ▼
-        ┌─────────────────────────────┐
-        │       Gold Data Models      │
-        │   Facts + Dimensions + SCD  │
-        └─────────────────────────────┘
-```
+**WALMART Data Engineering End-To-End Project [Airflow + DBT + Databricks]**
 
-------------------------------------------------------------------------
+https://youtu.be/ZEE-jNAthB0
+
+The repository implementation should be treated as a portfolio/learning implementation rather than a claim of production deployment.
+
+---
 
 # Author
 
 **Aayush Kumar**
 
-Data Engineering \| Python \| SQL \| Apache Airflow \| dbt \| Databricks
-\| Delta Lake
-
-------------------------------------------------------------------------
-
-## Disclaimer
-
-This project is created for educational and portfolio purposes.
-Walmart-related data used in the project should be treated as
-sample/demo data unless explicitly sourced from an authorized public
-dataset.
+Data Engineering  
+Python • SQL • Apache Airflow • dbt • Databricks • Delta Lake • AWS
