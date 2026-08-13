@@ -41,8 +41,6 @@ The uploaded project repository contains the **Airflow orchestration, Docker env
 - [Running the Project](#running-the-project)
 - [Security Notes](#security-notes)
 - [What This Project Demonstrates](#what-this-project-demonstrates)
-- [Limitations of This Repository](#limitations-of-this-repository)
-- [Future Improvements](#future-improvements)
 - [Author](#author)
 
 ---
@@ -1369,39 +1367,6 @@ ws.jobs.run_now(job_id="your_job_id")
 ```
 
 Therefore the README describes the ingestion architecture shown in the project diagram/video while clearly separating it from the code that is actually present in this repository.
-
----
-
-# Future Improvements
-
-These are improvements that can be added later without changing the current architecture:
-
-- Add the Databricks ingestion notebook/job source to the repository
-- Replace hardcoded Databricks placeholders with Airflow Connections or secrets
-- Add `.env.example`
-- Add a production-style `.gitignore`
-- Add GitHub Actions CI
-- Add automated `dbt compile` and `dbt test`
-- Add Airflow failure notifications
-- Add pipeline monitoring
-- Add dbt documentation screenshots
-- Add Airflow DAG screenshots
-- Add Databricks job screenshots
-- Add a Power BI dashboard on top of the Gold layer
-- Add a data dictionary
-- Add a dedicated data model diagram
-
----
-
-# Reference
-
-This project follows the architecture and concepts demonstrated in the following tutorial:
-
-**WALMART Data Engineering End-To-End Project [Airflow + DBT + Databricks]**
-
-https://youtu.be/ZEE-jNAthB0
-
-The repository implementation should be treated as a portfolio/learning implementation rather than a claim of production deployment.
 
 ---
 
