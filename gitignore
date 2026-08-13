@@ -1,0 +1,118 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# =========================
+# Apache Airflow
+# =========================
+airflow.cfg
+airflow.db
+airflow.db-shm
+airflow.db-wal
+logs/
+airflow_logs/
+standalone_admin_password.txt
+
+# =========================
+# dbt
+# =========================
+target/
+dbt_packages/
+dbt_modules/
+logs/
+*.manifest.json
+*.run_results.json
+*.catalog.json
+*.sources.json
+*.invocation_id
+
+# Keep dbt project configuration/source files
+!dbt_project.yml
+!profiles.yml.example
+
+# =========================
+# Databricks
+# =========================
+.databricks/
+.databricks-connect
+*.dbc
+
+# =========================
+# IDEs
+# =========================
+.vscode/
+.idea/
+*.iml
+*.code-workspace
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Docker
+# =========================
+docker-compose.override.yml
+
+# =========================
+# Data / generated files
+# =========================
+*.csv
+*.json
+*.parquet
+*.orc
+*.avro
+data/raw/
+data/processed/
+data/output/
+
+# =========================
+# Temporary files
+# =========================
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
